@@ -111,23 +111,23 @@ def _flip(s: str, k: int) -> str:
 #(at N=19 the best graph is a near-tree with 18 edges and every flip makes it worse).
 #The swap pass below moves one edge at a time without changing the number of edges.
 #CHANGED: default max_steps M -> 10*M so search from dense random graphs can finish at N=19
-def greedy_search_from_startpoint(db, obj: str, max_steps=10 * M):
-    #Strip the whitespace first
-    current = obj.strip()
+def greedy_search_from_startpoint(db, obj: str, max_steps=10 * M,
+                                  mode="two_flip", pair_samples=2000):
+    '''
+    mode="one_flip": single edge flips only (classic hill climb, weak here)
+    mode="two_flip": single flips, then pairs of flips (stronger, slower)
+    pair_samples: how many random pairs to try per stalled step (None = all)
+    '''
 
-    #Check if the object is valid, if not, then changes current to all 0 bit-string
-    #(loop.py now filters invalid samples before calling this, so this is only a fallback)
+    current = obj.strip()
     if not is_valid(current):
         current = empty_starting_point()
-
-    #Calculates the current score
     current_score = reward_calc(current)
 
-    #Start the loop for greedy search
     for _ in range(max_steps):
         improved = False
 
-        # --- 1. single flip: delete or add one edge, in a random order ---------
+        # --- every mode: single flip ---
         order = list(range(M))
         random.shuffle(order)
         for k in order:
@@ -140,70 +140,34 @@ def greedy_search_from_startpoint(db, obj: str, max_steps=10 * M):
         if improved:
             continue
 
-        # --- 2. swap: one edge off, another on (edge count stays fixed) --------
-        #From a sparse near-tree no flip helps, but relocating an edge can.
-        ones = [i for i in range(M) if current[i] == "1"]
-        zeros = [i for i in range(M) if current[i] == "0"]
-        random.shuffle(ones)
-        random.shuffle(zeros)
-        for off in ones:
+        if mode == "one_flip":        # nothing else to try -> local optimum
+            break
+
+        # --- two_flip mode: pairs of flips (adds the swap passes and more) ---
+        if pair_samples is None:
+            pairs = [(i, j) for i in range(M) for j in range(i + 1, M)]
+            random.shuffle(pairs)
+        else:
+            pairs = (tuple(random.sample(range(M), 2)) for _ in range(pair_samples))
+
+        for i, j in pairs:
             s = list(current)
-            s[off] = "0"
-            for on in zeros:
-                s[on] = "1"
-                cand = "".join(s)
-                s[on] = "0"
-                #Disconnected graphs score about -1000, so skip them early
-                #instead of letting them block a swap that would otherwise help.
-                A = bitstring_to_adj(cand)
-                if not nx.is_connected(nx.from_numpy_array(A)):
-                    continue
-                sc = reward_calc(cand)
-                if sc > current_score:
-                    current, current_score = cand, sc
-                    improved = True
-                    break
-            if improved:
-                break
-        if improved:
-            continue
-
-        # --- 2b. two-edge swap: two edges off, two on (edge count fixed) -------
-        #Trying every pair is far too many (about 50 million at N=19), so try a random sample
-        ones = [i for i in range(M) if current[i] == "1"]
-        zeros = [i for i in range(M) if current[i] == "0"]
-        if len(ones) >= 2 and len(zeros) >= 2:
-            for _try in range(2000):
-                s = list(current)
-                for i in random.sample(ones, 2):
-                    s[i] = "0"
-                for i in random.sample(zeros, 2):
-                    s[i] = "1"
-                cand = "".join(s)
-                sc = reward_calc(cand)   #disconnected graphs score about -1000, so they're rejected
-                if sc > current_score:
-                    current, current_score = cand, sc
-                    improved = True
-                    break
-        if improved:
-            continue
-
-        # --- 3. add an edge (keeps connectivity for free) ----------------------
-        for _try in range(200):
-            zeros = [i for i in range(M) if current[i] == "0"]
-            if not zeros:
-                break
-            cand = _flip(current, random.choice(zeros))
+            s[i] = "1" if s[i] == "0" else "0"
+            s[j] = "1" if s[j] == "0" else "0"
+            cand = "".join(s)
+            if not nx.is_connected(nx.from_numpy_array(bitstring_to_adj(cand))):
+                continue
             sc = reward_calc(cand)
             if sc > current_score:
                 current, current_score = cand, sc
                 improved = True
                 break
 
-        if not improved:               # genuine local optimum
+        if not improved:
             break
 
     return [current]
+
 
 #Keep the edge swap
 def count_improving_swaps(obj: str, limit: int = None):
@@ -291,3 +255,11 @@ def random_double_star():
 
 
 
+def random_graph_bits(p=None, connected=True, max_tries=100):
+    '''Erdos-Renyi G(N, p) as a bitstring. p is drawn at random if not given.'''
+    for _ in range(max_tries):
+        q = p if p is not None else random.uniform(0.1, 0.4)
+        s = "".join("1" if random.random() < q else "0" for _ in range(M))
+        if not connected or nx.is_connected(nx.from_numpy_array(bitstring_to_adj(s))):
+            return s
+    return s   # fallback: may be disconnected; local search will still fix it
